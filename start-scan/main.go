@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/s3manager"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -86,13 +86,14 @@ func startScan(scanspec ScanSpec) error {
 // in a given bucket, with a given scan ID
 func fetchScanSpec(configbucket, scanid string) (ScanSpec, error) {
 	ss := ScanSpec{}
-	cfg, err := external.LoadDefaultAWSConfig()
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		return ss, err
 	}
-	downloader := s3manager.NewDownloader(cfg)
+	client := s3.NewFromConfig(cfg)
+	downloader := manager.NewDownloader(client)
 	buf := aws.NewWriteAtBuffer([]byte{})
-	_, err = downloader.Download(buf, &s3.GetObjectInput{
+	_, err = downloader.Download(context.TODO(), buf, &s3.GetObjectInput{
 		Bucket: aws.String(configbucket),
 		Key:    aws.String(scanid + ".json"),
 	})
@@ -106,23 +107,34 @@ func fetchScanSpec(configbucket, scanid string) (ScanSpec, error) {
 	return ss, nil
 }
 
+type S3ListObjectsAPI interface {
+	ListObjectsV2(ctx context.Context,
+		params *s3.ListObjectsV2Input,
+		optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+}
+
+func GetObjects(c context.Context, api S3ListObjectsAPI, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	return api.ListObjectsV2(c, input)
+}
+
 func handler() error {
 	configbucket := os.Getenv("ECR_SCAN_CONFIG_BUCKET")
 	fmt.Printf("DEBUG:: scan start\n")
-	cfg, err := external.LoadDefaultAWSConfig()
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		fmt.Println(err)
 		return err
 	}
-	svc := s3.New(cfg)
-	fmt.Printf("Scanning bucket %v for scan specs\n", configbucket)
-	req := svc.ListObjectsRequest(&s3.ListObjectsInput{
+	//svc := s3.New(cfg)
+	client := s3.NewFromConfig(cfg)
+
+	input := &s3.ListObjectsV2Input{
 		Bucket: &configbucket,
-	},
-	)
-	resp, err := req.Send(context.TODO())
+	}
+
+	fmt.Printf("Scanning bucket %v for scan specs\n", configbucket)
+	resp, err := GetObjects(context.TODO(), client, input)
 	if err != nil {
-		fmt.Println(err)
 		return err
 	}
 	for _, obj := range resp.Contents {

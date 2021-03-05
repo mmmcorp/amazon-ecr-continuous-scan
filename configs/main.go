@@ -11,9 +11,9 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/s3manager"
 	"github.com/aws/aws-sdk-go/aws"
 
 	uuid "github.com/satori/go.uuid"
@@ -48,7 +48,7 @@ func serverError(err error) (events.APIGatewayProxyResponse, error) {
 
 // storeScanSpec stores the scan spec in a given bucket
 func storeScanSpec(configbucket string, scanspec ScanSpec) error {
-	cfg, err := external.LoadDefaultAWSConfig()
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,11 @@ func storeScanSpec(configbucket string, scanspec ScanSpec) error {
 	if err != nil {
 		return err
 	}
-	uploader := s3manager.NewUploader(cfg)
-	_, err = uploader.Upload(&s3manager.UploadInput{
+
+	client := s3.NewFromConfig(cfg)
+
+	uploader := manager.NewUploader(client)
+	_, err = uploader.Upload(context.TODO(), &s3.PutObjectInput{
 		Bucket: aws.String(configbucket),
 		Key:    aws.String(scanspec.ID + ".json"),
 		Body:   strings.NewReader(string(ssjson)),
@@ -69,13 +72,16 @@ func storeScanSpec(configbucket string, scanspec ScanSpec) error {
 // in a given bucket, with a given scan ID
 func fetchScanSpec(configbucket, scanid string) (ScanSpec, error) {
 	ss := ScanSpec{}
-	cfg, err := external.LoadDefaultAWSConfig()
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		return ss, err
 	}
-	downloader := s3manager.NewDownloader(cfg)
+
+	client := s3.NewFromConfig(cfg)
+
+	downloader := manager.NewDownloader(client)
 	buf := aws.NewWriteAtBuffer([]byte{})
-	_, err = downloader.Download(buf, &s3.GetObjectInput{
+	_, err = downloader.Download(context.TODO(), buf, &s3.GetObjectInput{
 		Bucket: aws.String(configbucket),
 		Key:    aws.String(scanid + ".json"),
 	})
@@ -89,33 +95,62 @@ func fetchScanSpec(configbucket, scanid string) (ScanSpec, error) {
 	return ss, nil
 }
 
+type S3DeleteObjectAPI interface {
+	DeleteObject(ctx context.Context,
+		params *s3.DeleteObjectInput,
+		optFns ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+}
+
+func DeleteItem(c context.Context, api S3DeleteObjectAPI, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	return api.DeleteObject(c, input)
+}
+
+
 // rmClusterSpec deletes the scan spec in a given bucket
 func rmClusterSpec(configbucket, scanid string) error {
-	cfg, err := external.LoadDefaultAWSConfig()
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		return err
 	}
-	svc := s3.New(cfg)
-	req := svc.DeleteObjectRequest(&s3.DeleteObjectInput{
+	//svc := s3.New(cfg)
+	client := s3.NewFromConfig(cfg)
+
+	input := &s3.DeleteObjectInput{
 		Bucket: aws.String(configbucket),
 		Key:    aws.String(scanid + ".json"),
-	})
-	_, err = req.Send(context.Background())
+	}
+
+	_, err = DeleteItem(context.TODO(), client, input)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
+type S3ListObjectsAPI interface {
+	ListObjectsV2(ctx context.Context,
+		params *s3.ListObjectsV2Input,
+		optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+}
+
+func GetObjects(c context.Context, api S3ListObjectsAPI, input *s3.ListObjectsV2Input) (*s3.ListObjectsV2Output, error) {
+	return api.ListObjectsV2(c, input)
+}
+
 func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
 	configbucket := os.Getenv("ECR_SCAN_CONFIG_BUCKET")
 	fmt.Printf("DEBUG:: config continuous scan start\n")
 
-	cfg, err := external.LoadDefaultAWSConfig()
+	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
 		return serverError(err)
 	}
-	svc := s3.New(cfg)
+	//svc := s3.New(cfg)
+	client := s3.NewFromConfig(cfg)
+
+	input := &s3.ListObjectsV2Input{
+		Bucket: &configbucket,
+	}
 
 	switch request.HTTPMethod {
 	case "POST":
@@ -126,10 +161,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if err != nil {
 			return serverError(err)
 		}
-		specID, err := uuid.NewV4()
-		if err != nil {
-			return serverError(err)
-		}
+		specID := uuid.NewV4()
 		ss.ID = specID.String()
 		ss.CreationTime = fmt.Sprintf("%v", time.Now().Unix())
 		err = storeScanSpec(configbucket, ss)
@@ -151,14 +183,11 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		if _, ok := request.PathParameters["id"]; !ok {
 			return serverError(fmt.Errorf("Unknown configuration"))
 		}
-		req := svc.ListObjectsRequest(&s3.ListObjectsInput{
-			Bucket: &configbucket,
-		},
-		)
-		resp, err := req.Send(context.TODO())
+		resp, err := GetObjects(context.TODO(), client, input)
 		if err != nil {
 			return serverError(err)
 		}
+
 		for _, obj := range resp.Contents {
 			fn := *obj.Key
 			scanID := strings.TrimSuffix(fn, ".json")
@@ -185,11 +214,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 		}, nil
 	case "GET":
 		fmt.Printf("DEBUG:: listing scan config\n")
-		req := svc.ListObjectsRequest(&s3.ListObjectsInput{
-			Bucket: &configbucket,
-		},
-		)
-		resp, err := req.Send(context.TODO())
+		resp, err := GetObjects(context.TODO(), client, input)
 		if err != nil {
 			return serverError(err)
 		}
