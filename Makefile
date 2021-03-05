@@ -30,3 +30,23 @@ destroy:
 
 status:
 	aws cloudformation describe-stacks --stack-name ${ECR_SCAN_STACK_NAME}
+
+docker-build:
+	docker-compose build
+
+docker-go-build: docker-bconfigs docker-bsscan docker-bsummary docker-bfindings
+
+docker-bconfigs:
+	docker-compose run build env GOOS=linux GOARCH=amd64 go build -v -ldflags '-d -s -w' -a -tags netgo -installsuffix netgo -o bin/configs ./configs
+
+docker-bsscan:
+	docker-compose run build env GOOS=linux GOARCH=amd64 go build -v -ldflags '-d -s -w' -a -tags netgo -installsuffix netgo -o bin/start-scan ./start-scan
+
+docker-bsummary:
+	docker-compose run build env GOOS=linux GOARCH=amd64 go build -v -ldflags '-d -s -w' -a -tags netgo -installsuffix netgo -o bin/summary ./summary
+
+docker-bfindings:
+	docker-compose run build env GOOS=linux GOARCH=amd64 go build -v -ldflags '-d -s -w' -a -tags netgo -installsuffix netgo -o bin/findings ./findings
+
+docker-deploy:
+	docker-compose run build /bin/bash ./scripts/build_and_deploy.sh
