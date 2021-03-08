@@ -14,8 +14,30 @@ Globals:
 Parameters:
     ConfigBucketName:
         Type: String
+    AllowIPAddress:
+        Type: String
 
 Resources:
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: dev
+      Auth:
+        ResourcePolicy:
+          CustomStatements: [
+            {
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "execute-api:Invoke",
+              "Resource": "execute-api:/*/*/*",
+              "Condition": {
+                "IpAddress": {
+                  "aws:SourceIp": !Sub "${AllowIPAddress}"
+                }
+              }
+            }
+          ]
+
   ConfigsFunc:
     Type: AWS::Serverless::Function
     Properties:
@@ -30,16 +52,19 @@ Resources:
         AddConfig:
           Type: Api
           Properties:
+            RestApiId: !Ref ApiGateway
             Path: /configs
             Method: POST
         RemoveConfig:
           Type: Api
           Properties:
+            RestApiId: !Ref ApiGateway
             Path: /configs/{id}
             Method: DELETE
         ListConfigs:
           Type: Api
           Properties:
+            RestApiId: !Ref ApiGateway
             Path: /configs
             Method: GET
       Policies:
@@ -66,6 +91,7 @@ Resources:
         CatchAll:
           Type: Api
           Properties:
+            RestApiId: !Ref ApiGateway
             Path: /summary
             Method: GET
       Policies:
@@ -96,6 +122,7 @@ Resources:
         CatchAll:
           Type: Api
           Properties:
+            RestApiId: !Ref ApiGateway
             Path: /findings/{id}
             Method: GET
       Policies:
@@ -126,7 +153,7 @@ Resources:
         Timer:
           Type: Schedule
           Properties:
-            Schedule: rate(24 hours)
+            Schedule: cron(0 0 1 * ? *)
       Policies:
         - AWSLambdaExecute
         - Version: '2012-10-17'
@@ -141,10 +168,8 @@ Resources:
               Resource:
               - !Sub "arn:aws:s3:::${ConfigBucketName}/*"
               - !Sub "arn:aws:s3:::${ConfigBucketName}"
-  
 
 Outputs:
   ECRScanAPIEndpoint:
     Description: "The ECR Continuous Scan HTTP API Gateway endpoint URL"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
-
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev"
