@@ -171,7 +171,7 @@ func handler(request events.APIGatewayProxyRequest) (events.APIGatewayProxyRespo
 			for sev, count := range result.FindingSeverityCounts {
 				sevcount += fmt.Sprintf(" %v: %v\n", sev, *count)
 			}
-			ssresult += fmt.Sprintf("Results for %v:%v in %v:\n%v\n\n", scanspec.Repository, tag, scanspec.Region, sevcount)
+			ssresult += fmt.Sprintf("Results for %v:%v(scanID=%v) in %v:\n%v\n\n", scanspec.Repository, tag, scanID, scanspec.Region, sevcount)
 		}
 	}
 
